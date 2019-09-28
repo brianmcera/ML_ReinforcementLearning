@@ -1,6 +1,8 @@
 # Public
 Open-Source Code!
 
-'''
-test
-'''
+## Example Code
+here is some example code
+```
+print('hello world!')
+```
