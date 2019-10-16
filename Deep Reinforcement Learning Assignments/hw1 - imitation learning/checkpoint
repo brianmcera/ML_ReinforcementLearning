@@ -1,0 +1,2 @@
+model_checkpoint_path: "/home/brian/cs294/hw1/data-all.cpkt"
+all_model_checkpoint_paths: "/home/brian/cs294/hw1/data-all.cpkt"
