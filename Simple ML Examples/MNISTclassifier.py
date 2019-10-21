@@ -5,32 +5,35 @@ author: Brian Cera
 """
 
 from __future__ import absolute_import, division, print_function, unicode_literals
-import numpy as np
+#import numpy as np
 import tensorflow as tf
+#tf.enable_eager_execution()
 from tensorflow.keras.layers import Dense, Flatten, Conv2D
 from tensorflow.keras import Model
 import pdb
 
+# check for available GPU devices
+#sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+
 # load data and normalize
 mnist = tf.keras.datasets.mnist
 (x_train, y_train), (x_test, y_test) = mnist.load_data()
-x_train, x_test = x_train/255.0, x_test/255.0
+x_train, x_test = x_train / 255.0, x_test / 255.0
 
 #add channels dimension
-#pdb.set_trace()
 x_train = x_train[..., tf.newaxis]
 x_test = x_test[..., tf.newaxis]
 
 # batch and shuffle data
 batch_size = 32
 train_ds = tf.data.Dataset.from_tensor_slices(
-        (x_train, y_train)).shuffle(10000).batch(32)
-test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test)).batch(32)
+    (x_train, y_train)).shuffle(10000).batch(32)
+test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test)).batch(batch_size)
 
 class MyModel(Model):
     def __init__(self):
         super(MyModel, self).__init__()
-        self.conv1 = Conv2D(32, 3, activation='relu')
+        self.conv1 = Conv2D(batch_size, 3, activation='relu')
         self.flatten = Flatten()
         self.d1 = Dense(128, activation='relu')
         self.d2 = Dense(10, activation='softmax')
@@ -58,7 +61,6 @@ def train_step(images, labels):
     with tf.GradientTape() as tape:
         predictions = model(images)
         loss = loss_object(labels, predictions)
-    
     gradients = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(gradients,model.trainable_variables))
 
@@ -74,19 +76,21 @@ def test_step(images,labels):
     test_accuracy(labels, predictions)
 
 EPOCHS = 5
+count = 0
 for epoch in range(EPOCHS):
     for images, labels in train_ds:
         train_step(images, labels)
-
+    
+    print('test')
     for test_images, test_labels in test_ds:
         test_step(test_images, test_labels)
 
     template = 'Epoch {}, Loss: {}, Accuracy: {}, Test Loss: {}, Test Accuracy {}'
     print(template.format(epoch+1,
                             train_loss.result(),
-                            train_accuracy.results()*100,
+                            train_accuracy.result()*100,
                             test_loss.result(),
-                            test_accuracy.results*100))
+                            test_accuracy.result()*100))
 
     # reset metrics for next epoch
     train_loss.reset_states()
