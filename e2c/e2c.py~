@@ -1,11 +1,12 @@
 import numpy as np
 import tensorflow as tf
+import time
 import gym
 import pdb
 from tensorflow.keras import Model
 from tensorflow.keras.layers import Dense, Flatten, Conv2D
 
-def myModel(Model):
+class policyGradient(Model):
     def __init__(self,num_outputs):
         super(myModel, self).__init__()
         self.conv1 = Conv2D(batch_size, 3, activation='relu')
@@ -20,6 +21,40 @@ def myModel(Model):
         x = self.d1(x)
         x = self.d2(x)
         return self.d3(x)
+
+def sampleTrajectories(num_traj, num_steps, env, controller, show_visual=False)
+    trajectories = []
+    for _ in range(num_traj)
+        ob = env.reset()
+        obs, next_obs, acs, rewards, returns = [], [], [], []
+        steps = 0
+        ret = 0
+        while True:
+            if(show_visual):
+                env.render()
+                time.sleep(0.05)
+            obs.append(ob)
+            ac = controller.predict(ob) 
+            acs.append(ac)
+            ob, reward, done, _ = env.step(action)
+            next_obs.append(ob)
+            rewards.append(reward)
+            ret += reward
+            returns.append(ret)
+            if(steps%1000==0):
+                print(return_val)
+            steps += 1
+            if done or steps>num_steps:
+                print("Episode finished after {} timesteps".format(steps))
+                break
+        returns = np.array(rewards)
+        traj = {'observations' : np.array(obs),
+                'next_observations': np.array(next_obs),
+                'rewards' : np.array(rewards),
+                'actions' : np.array(acs),
+                'returns' : np.array(returns)}
+        trajectories.append(traj)
+    return trajectories
 
 def main():
     
@@ -50,18 +85,6 @@ def main():
     def test_step():
         pass
 
-    for episode in range(20)
-        observation = env.reset()
-        for t in range(10000):
-            env.render()
-            print(observation)
-            #pdb.set_trace()
-            action = env.action_space.sample()
-            observation,reward,done,info = env.step(action)
-            if done:
-                print("Episode finished after {} timesteps".format(t+1))
-                break
-    env.close()
 
 if __name__ == '__main__':
     main()
