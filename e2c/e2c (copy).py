@@ -27,7 +27,7 @@ class policyMu(Model):
         #x = self.dropout(x)
         x = self.d2(x)
         x = self.d3(x)
-        #x = self.sample(x)
+        x = self.sample(x)
         return x
 
 class baselineNN(Model):
@@ -90,8 +90,7 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
                 else:
                     ac[2] = 0
             else:
-                inputs = tf.expand_dims(ob.astype(np.float32),0) 
-                inputs = inputs +  tf.random.normal(inputs.shape[1:], mean=inputs, stddev=[1])
+                inputs = tf.expand_dims(ob.astype(float),0) 
                 inputs = np.divide(inputs - norm_constants[0],norm_constants[1])
                 ac = controller(inputs)[0]
                 ac = np.multiply(ac,norm_constants[3]) + norm_constants[2]
@@ -167,7 +166,6 @@ def main():
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     assert len(physical_devices) > 0
     tf.config.experimental.set_memory_growth(physical_devices[0], True)
-    #tf.keras.backend.set_floatx('float64')
     
     # initialize environment and deep model
     env = gym.make('CarRacing-v0') # define chosen environment here
@@ -175,18 +173,14 @@ def main():
     ob_dim = env.observation_space.shape
     ac_dim = env.action_space.n if discrete else env.action_space.shape[0]
 
-    optimizer = tf.keras.optimizers.Adam()
     loss_object = tf.keras.losses.MeanSquaredError() 
-    baseline_loss_object = tf.keras.losses.MeanSquaredError()
-
-    train_MSE_metric = tf.keras.metrics.MeanSquaredError()
-    val_MSE_metric = tf.keras.metrics.MeanSquaredError()
 
     controller = policyMu(ob_dim, ac_dim)
     controller.compile(optimizer = tf.keras.optimizers.Adam(),
                     loss = loss_object,
                     metrics = [])
 
+    baseline_loss_object = tf.keras.losses.MeanSquaredError()
     baseline = baselineNN(ob_dim)
     baseline.compile(optimizer = tf.keras.optimizers.Adam(),
                     loss = baseline_loss_object,
@@ -198,7 +192,7 @@ def main():
     norm_constants = ()
     for _ in range(training_epochs):
         # generate training data 
-        num_steps = 1000
+        num_steps = 1500
         if(first_run):
             num_traj = 10
         else:
@@ -223,47 +217,10 @@ def main():
 
         # baseline neural network training
         print('Training baseline network...')
-        batch_size = 64
         split_size = 8
-        baseline_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1024).skip(5).batch(32)
-        baseline_validation = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1024).skip(5).batch(32)
-        #baseline.fit(baseline_dataset, epochs=5, validation_data=baseline_validation)
-
-        for epoch in range(5):
-            print('Start of epoch %d' % (epoch,))
-
-            # iterate over batches of dataset
-            for step, (x_batch_train, y_batch_train) in enumerate(baseline_dataset):
-                with tf.GradientTape() as tape:
-                    model_output = baseline(x_batch_train)
-                    loss_value = baseline_loss_object(y_batch_train,model_output)
-                grads = tape.gradient(loss_value, baseline.trainable_weights)
-                optimizer.apply_gradients(zip(grads, baseline.trainable_weights))
-
-                # update training metric
-                train_MSE_metric(y_batch_train, model_output)
-
-                # log every 20 batches
-                if step % 20 == 0:
-                    print('Training loss (for one batch) at step %s: %s' % (step, float(loss_value)))
-                    print('Seen so far: %s samples' % ((step+1) * batch_size))
-
-            # display training metrics at the end of each epoch
-            train_MSE = train_MSE_metric.result()
-            print('Training MSE over epoch: %s' % (float(train_MSE),))
-            # reset training metrics at the end of each epoch
-            train_MSE_metric.reset_states()
-
-            # run a validation loop at the end of each epoch
-            for x_batch_val, y_batch_val in baseline_validation:
-                val_output = baseline(x_batch_val)
-                #update val metrics
-                val_MSE_metric(y_batch_val,val_output)
-            val_MSE = val_MSE_metric.result()
-            val_MSE_metric.reset_states()
-            print('Validation MSE: %s' % (float(val_MSE),))
-
-                    
+        baseline_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1000).skip(5).batch(16)
+        baseline_validation = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1000).skip(5).batch(16)
+        baseline.fit(baseline_dataset, epochs=5, validation_data=baseline_validation)
         print('')
 
         # control policy training
@@ -278,8 +235,8 @@ def main():
             #reward_to_go /= (np.std(reward_to_go) + 1e-8)
             reward_to_go = np.divide(reward_to_go,np.std(reward_to_go)+1e-8)
 
-        train_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], acs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1024).batch(32)
-        validation_dataset = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], acs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1024).batch(32)
+        #train_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], acs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1000).batch(32)
+        #validation_dataset = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], acs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1000).batch(32)
 
         if(np.any(np.isnan(reward_to_go))):
             print('nan error')
@@ -291,44 +248,10 @@ def main():
             print('nan error')
             program_pause = raw_input("action NaNs")
         
-        #controller.fit(x=obs_data[:-num_samples//split_size], y=acs_data[:-num_samples//split_size], sample_weight=reward_to_go[:-num_samples//split_size], batch_size=128, epochs=5)
+        controller.fit(x=obs_data[:-num_samples//split_size], y=acs_data[:-num_samples//split_size], sample_weight=reward_to_go[:-num_samples//split_size], batch_size=128, epochs=5)
                 #validation_data=(obs_data[-num_samples//split_size:],acs_data[-num_samples//split_size:],
                     #reward_to_go[-num_samples//split_size:]))
         #controller.fit(train_dataset, epochs=5, validation_data=validation_dataset)
-
-        for epoch in range(5):
-            print('Start of epoch %d' % (epoch,))
-
-            # iterate over batches of dataset
-            for step, (x_batch_train, y_batch_train, reward_batch_train) in enumerate(train_dataset):
-                with tf.GradientTape() as tape:
-                    model_output = controller(x_batch_train)
-                    loss_value = loss_object(y_batch_train, model_output, sample_weight = reward_batch_train)
-                grads = tape.gradient(loss_value, controller.trainable_weights)
-                optimizer.apply_gradients(zip(grads, controller.trainable_weights))
-
-                # update training metric
-                train_MSE_metric(y_batch_train, model_output)
-
-                # log every 20 batches
-                if step % 20 == 0:
-                    print('Training loss (for one batch) at step %s: %s' % (step, float(loss_value)))
-                    print('Seen so far: %s samples' % ((step+1) * batch_size))
-
-            # display training metrics at the end of each epoch
-            train_MSE = train_MSE_metric.result()
-            print('Training MSE over epoch: %s' % (float(train_MSE),))
-            # reset training metrics at the end of each epoch
-            train_MSE_metric.reset_states()
-
-            # run a validation loop at the end of each epoch
-            for x_batch_val, y_batch_val, reward_batch_val in validation_dataset:
-                val_output = baseline(x_batch_val)
-                #update val metrics
-                val_MSE_metric(y_batch_val,val_output)
-            val_MSE = val_MSE_metric.result()
-            val_MSE_metric.reset_states()
-            print('Validation MSE: %s' % (float(val_MSE),))
 
         del obs_data, acs_data, reward_to_go, data
 
