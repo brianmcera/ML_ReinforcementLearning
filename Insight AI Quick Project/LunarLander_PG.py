@@ -12,6 +12,11 @@ from tensorflow.keras import Model, layers
 from tensorflow.keras.layers import Dense, Flatten, Conv2D, Dropout, MaxPool2D, BatchNormalization
 
 class policyMu(Model):
+    """
+    This class defines the control policy NN model for LunarLander environment.
+    Given an input of a batch of state-vectors, it will return a batch of optimized controller inputs.
+    It features dense fully-connected layers with batch normalization and dropout for regularization and more stable learning.
+    """
     def __init__(self, ob_dim, ac_dim):
         super(policyMu, self).__init__()
         self.d1 = Dense(5, input_shape=ob_dim, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
@@ -19,9 +24,10 @@ class policyMu(Model):
         self.d3 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
         self.d4 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
         self.d5 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
-        self.d6 = Dense(ac_dim)
+        self.d6 = Dense(ac_dim, activation='tanh')
         self.dropout = Dropout(rate=0.5)
         self.batchnormalization = BatchNormalization()
+        self.batchnormalization2 = BatchNormalization()
 
     def call(self, x):
         x = self.d1(x)
@@ -34,6 +40,11 @@ class policyMu(Model):
         return self.d6(x)
 
 class baselineNN(Model):
+    """
+    This class defines the baseline critic model for the LunarLander env.
+    Given an input of a batch of state-vectors, it will return a batch of approximate value function estimates.
+    It features dense fully-connected layers with batch normalization and ropout for regularization and stable learning.
+    """
     def __init__(self, ob_dim):
         super(baselineNN, self).__init__()
         self.d1 = Dense(5, input_shape=ob_dim, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
@@ -43,6 +54,7 @@ class baselineNN(Model):
         self.d5 = Dense(5, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.dropout = Dropout(rate=0.5)
         self.batchnormalization = BatchNormalization()
+        self.batchnormalization2 = BatchNormalization()
         self.d6 = Dense(1) 
 
     def call(self, x):
@@ -56,6 +68,9 @@ class baselineNN(Model):
         return self.d6(x)
     
 def sample_trajectories(num_traj, num_steps, env, controller, scaler, transformer, show_visual=False, first_run=False, normalize_inputs=True):
+    """
+    This function will sample the OpenAI Gym environment for sample trajectories used for reinforcement learning.
+    """
     return_vec = np.array([])
     for traj_num in range(num_traj):
         ob = env.reset()
@@ -85,21 +100,17 @@ def sample_trajectories(num_traj, num_steps, env, controller, scaler, transforme
                 ac = np.maximum(ac,env.action_space.low)
             acs.append(ac)
             ob, reward, done, info = env.step(ac)
+
+            reward -= 1e2*ob[0]**2 # custom: penalize deviation from x=0
             next_obs.append(ob)
             rewards.append(reward)
             ret += reward
             returns.append(ret)
-            if(steps%1000==0):
-                print(ret)
             steps += 1
 
             if done or steps>num_steps:
-                #rewards[-1] -= 500
-                #if(ob[-1] or ob[-2]):
-                # rewards[-1] += 1e2*ob[3] # penalize lander vertical velocity
-                # returns[-1] += 1e2*ob[3] # penalize lander vertical velocity
-                # rewards[-1] += -1e2*ob[0]**2 
-                # returns[-1] += -1e2*ob[0]**2 
+                rewards[-1] -= 500
+                returns[-1] -= 500
                 print("Episode {} finished after {} timesteps".format(traj_num, steps))
                 break
 
@@ -110,6 +121,7 @@ def sample_trajectories(num_traj, num_steps, env, controller, scaler, transforme
         for i in range(2, reward_to_go.shape[0]+1):
             reward_to_go[-(i)] = rewards[-(i)] + discount*reward_to_go[-(i-1)] 
         
+        print('run return: {}'.format(returns[-1]))
         if(traj_num==0):
             trajectories = {"observations" : np.array(obs),
                 "next_observations": np.array(next_obs),
@@ -130,11 +142,12 @@ def sample_trajectories(num_traj, num_steps, env, controller, scaler, transforme
     return trajectories, return_vec
 
 def compute_normalized_data(data):
+    """
+    This function calculates simple data statistics for later use.
+    """
     obs_mean = tf.math.reduce_mean(tf.cast(data['observations'],tf.float32),axis=0)
     obs_std = tf.math.reduce_std(tf.cast(data['observations'],tf.float32),axis=0) + 1e-6*tf.ones(data['observations'].shape[1:])
-    acs_mean = tf.math.reduce_mean(data['actions'],axis=0)
-    acs_std = tf.math.reduce_std(data['actions'],axis=0)  + 1e-6*tf.ones(data['actions'].shape[1:])
-    return (obs_mean, obs_std, acs_mean, acs_std)
+    return (obs_mean, obs_std)#, acs_mean, acs_std)
 
 def main():
     random.seed(0)
@@ -161,8 +174,6 @@ def main():
 
     optimizer1 = tf.keras.optimizers.Adam(learning_rate=1e-3) # baseline optimizer
     optimizer2 = tf.keras.optimizers.Adam(learning_rate=1e-4) # controller optimizer - smaller stepsize
-    #optimizer1 = tf.keras.optimizers.SGD(learning_rate=1e-1, momentum=0.9)
-    #optimizer2 = tf.keras.optimizers.SGD(learning_rate=1e-1, momentum=0.9)
 
     loss_object = tf.keras.losses.MeanSquaredError() 
     baseline_loss_object = tf.keras.losses.MeanSquaredError()
@@ -186,7 +197,8 @@ def main():
     graph = tf.compat.v1.get_default_graph()
     graph.finalize()
     
-    # training loop
+    # TRAINING LOOP #################################################################
+    #################################################################################
     training_epochs = 50
     first_run = True
     norm_constants = ()
@@ -204,7 +216,7 @@ def main():
         if(first_run):
             num_traj = 100
         else:
-            num_traj = 30
+            num_traj = 20
         data, return_vec = sample_trajectories(num_traj, num_steps, env, controller, 
                                                 scaler, transformer, show_visual=True, 
                                                 first_run=first_run, normalize_inputs=normalize_input)
@@ -217,18 +229,31 @@ def main():
         std_return_vec = np.append(std_return_vec, np.std(return_vec))
         max_return_vec = np.append(max_return_vec, np.max(return_vec))
         print(avg_return_vec)
-        plt.plot(avg_return_vec)
-        plt.plot(avg_return_vec + std_return_vec, ':')
-        plt.plot(avg_return_vec - std_return_vec, ':')
-        plt.draw()
-        plt.pause(1e-3)
+        if(False):
+            plt.plot(avg_return_vec)
+            plt.plot(avg_return_vec + std_return_vec, ':')
+            plt.plot(avg_return_vec - std_return_vec, ':')
+            plt.draw()
+            plt.pause(1e-3)
 
+        # calculate normalized statistics, preprocess to improve training
         if(first_run):
             norm_constants = compute_normalized_data(data)
-            scaler = preprocessing.StandardScaler().fit(data['observations'])
-            X_transformed = scaler.transform(data['observations'])
-            transformer = decomposition.KernelPCA(n_components=data['observations'].shape[-1], kernel='poly')
-            transformer.fit(X_transformed)
+            scaler = preprocessing.StandardScaler()
+            scaler.fit(data['observations'])
+            X_normalized = scaler.transform(data['observations'])
+            transformer = decomposition.KernelPCA(n_components=data['observations'].shape[-1], kernel='linear')
+            X_transformed = transformer.fit_transform(X_normalized)
+            fig, axes = plt.subplots(8,2)
+            first_obs = data['observations']
+            for i in range(first_obs.shape[1]):
+                axes[i,0].hist(first_obs[:,i])
+                axes[i,1].hist(X_transformed[:,i])
+            fig.suptitle('Initial Data Preprocessing')
+            print(np.std(first_obs, axis=0))
+            print(np.std(X_transformed, axis=0))
+            plt.show()
+            input('Paused~')
         
         # collect data
         obs_data = data['observations']
@@ -253,13 +278,14 @@ def main():
 
         # baseline neural network training
         print('Training baseline network...')
-        batch_size = 1024
+        batch_size = 512
         split_size = 8
         baseline_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1024).batch(batch_size)
         baseline_validation = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1024).batch(batch_size)
 
         baseline.fit(baseline_dataset, epochs=10, validation_data=baseline_validation)
 
+        # manually defined gradient descent - useful for debugging
         for epoch in []:#range(10):
             print('Start of epoch %d' % (epoch,))
 
@@ -299,13 +325,13 @@ def main():
         # control policy training #######################################################
         #################################################################################
         print('Training policy network...')
-        batch_size = 1024
+        batch_size = 512
         split_size = 8
         if(1 and not first_run): # baseline network normalization
             reward_to_go -= baseline(obs_data)[:,0]
             reward_to_go = np.divide(reward_to_go, np.std(reward_to_go)+1e-8)
-            #reward_to_go -= np.mean(reward_to_go)
-        elif(1):
+            reward_to_go -= np.mean(reward_to_go)
+        elif(0):
             reward_to_go -= np.mean(reward_to_go)
             reward_to_go = np.divide(reward_to_go,np.std(reward_to_go)+1e-8)
 
@@ -322,6 +348,7 @@ def main():
 
         controller.fit(train_dataset, epochs=1, validation_data=validation_dataset)
 
+        # manually defined- gradient descent, useful for debugging 
         for epoch in []:#range(10):
             print('Start of epoch %d' % (epoch,))
 

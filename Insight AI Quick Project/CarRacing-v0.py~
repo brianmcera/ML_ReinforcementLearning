@@ -14,28 +14,32 @@ from tensorflow.keras.layers import Dense, Flatten, Conv2D, Dropout, MaxPool2D, 
 class policyMu(Model):
     def __init__(self, ob_dim, ac_dim):
         super(policyMu, self).__init__()
-        self.conv1 = Conv2D(10, 3, activation='relu', input_shape=ob_dim, kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        self.conv1 = Conv2D(10, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.conv2 = Conv2D(3, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.conv3 = Conv2D(3, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.maxpool1 = MaxPool2D(pool_size=(2,2))
+        self.maxpool1 = MaxPool2D(pool_size=(2,2), input_shape=ob_dim)
         self.maxpool2 = MaxPool2D(pool_size=(2,2))
+        self.maxpool3 = MaxPool2D(pool_size=(2,2))
         self.flatten = Flatten()
         self.d1 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d2 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d3 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d4 = Dense(ac_dim)
         self.dropout = Dropout(rate=0.5)
-        self.batchnormalization = BatchNormalization()
+        self.batchnormalization1 = BatchNormalization()
+        self.batchnormalization2 = BatchNormalization()
 
     def call(self, x):
-        x = self.conv1(x)
         x = self.maxpool1(x)
-        x = self.conv2(x)
+        x = self.conv1(x)
         x = self.maxpool2(x)
+        x = self.conv2(x)
+        x = self.maxpool3(x)
         x = self.conv3(x)
+        x = self.batchnormalization1(x)
         x = self.flatten(x)
         x = self.d1(x)
-        x = self.batchnormalization(x)
+        x = self.batchnormalization2(x)
         x = self.d2(x)
         x = self.dropout(x)
         x = self.d3(x)
@@ -44,28 +48,32 @@ class policyMu(Model):
 class baselineNN(Model):
     def __init__(self, ob_dim):
         super(baselineNN, self).__init__()
-        self.conv1 = Conv2D(10, 3, activation='relu', input_shape=ob_dim, kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        self.conv1 = Conv2D(10, 5, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.conv2 = Conv2D(3, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.conv3 = Conv2D(3, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.maxpool1 = MaxPool2D(pool_size=(2,2))
+        self.maxpool1 = MaxPool2D(pool_size=(2,2), input_shape=ob_dim)
         self.maxpool2 = MaxPool2D(pool_size=(2,2))
+        self.maxpool3 = MaxPool2D(pool_size=(2,2))
         self.flatten = Flatten()
         self.d1 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d2 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d3 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d4 = Dense(1)
         self.dropout = Dropout(rate=0.5)
-        self.batchnormalization = BatchNormalization()
+        self.batchnormalization1 = BatchNormalization()
+        self.batchnormalization2 = BatchNormalization()
 
     def call(self, x):
-        x = self.conv1(x)
         x = self.maxpool1(x)
-        x = self.conv2(x)
+        x = self.conv1(x)
         x = self.maxpool2(x)
+        x = self.conv2(x)
+        x = self.maxpool3(x)
         x = self.conv3(x)
+        x = self.batchnormalization1(x)
         x = self.flatten(x)
         x = self.d1(x)
-        x = self.batchnormalization(x)
+        x = self.batchnormalization2(x)
         x = self.d2(x)
         x = self.dropout(x)
         x = self.d3(x)
@@ -84,6 +92,8 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
             obs.append(ob)
             if(first_run):
                 ac = env.action_space.sample() 
+                if(ac[1]>0.5):
+                    ac[1]= 1 # encourage gas use for initial training
             else:
                 inputs = np.expand_dims(ob.astype(np.float32),0) 
                 inputs = inputs + 1e-2*np.random.standard_normal(inputs.shape[1:])
@@ -93,6 +103,8 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
                     inputs = tf.image.per_image_standardization(inputs)
                 ac = controller(inputs)[0]
             ac = np.array(ac)
+            if(ac[1]>0.5):
+                ac[1]= 1 # promote gas pedal
             if(np.any(np.isnan(ac))):
                 print('nan error')
                 pdb.set_trace()
@@ -109,13 +121,20 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
                 print(ret)
             steps += 1
 
+            #check to see if car is stuck
+            lookback = 5
+            if(steps>lookback and np.all(ob==obs[-lookback])):
+                rewards[-1] -= 10
+                returns[-1] -= 10
+                done = True
+
             if done or steps>num_steps:
                 print("Episode {} finished after {} timesteps".format(traj_num, steps))
                 break
 
         # backwards pass to calculate reward-to-go
         reward_to_go = np.full(len(rewards),np.nan)
-        discount = 0.80
+        discount = 0.90
         reward_to_go[-1] = rewards[-1]
         for i in range(2, reward_to_go.shape[0]+1):
             reward_to_go[-(i)] = rewards[-(i)] + discount*reward_to_go[-(i-1)] 
@@ -149,10 +168,10 @@ def main():
     random.seed(0)
     tf.random.set_seed(0)
     #enable dynamic GPU memory allocation
-    physical_devices = tf.config.experimental.list_physical_devices('GPU')
-    assert len(physical_devices) > 0
-    tf.config.experimental.set_memory_growth(physical_devices[0], True)
-    tf.keras.backend.set_floatx('float64')
+    # physical_devices = tf.config.experimental.list_physical_devices('GPU')
+    # assert len(physical_devices) > 0
+    # tf.config.experimental.set_memory_growth(physical_devices[0], True)
+    # tf.keras.backend.set_floatx('float64')
 
     # set up tensorboard logging
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -190,6 +209,8 @@ def main():
                     loss = baseline_loss_object,
                     metrics = [])
 
+    #controller.load_weights('./model_checkpoints/controller/20191114-003700')
+
     # make graph read-only to prevent accidentally adding nodes per iteration
     graph = tf.compat.v1.get_default_graph()
     graph.finalize()
@@ -206,15 +227,14 @@ def main():
     normalize_input = True # flag for toggling input normalization/kernel transformation
     for training_epoch in range(training_epochs):
         # generate training data 
-        num_steps = 1000
+        num_steps = 500
         if(first_run):
-            num_traj = 10
+            num_traj = 1
         else:
             num_traj = 10
         data, return_vec = sample_trajectories(num_traj, num_steps, env, controller, 
-                                                norm_constants, show_visual=False, 
+                                                norm_constants, show_visual=True, 
                                                 first_run=first_run, normalize_inputs=normalize_input)
-
         # output current training rewards
         print('The maximum return is {}'.format(tf.math.reduce_max(data['returns'])))
         print('The average return is {}'.format(tf.math.reduce_mean(data['returns'])))
@@ -256,10 +276,10 @@ def main():
         # baseline neural network training ################################
         ###################################################################
         print('Training baseline network...')
-        batch_size = 128
+        batch_size = 16
         split_size = 8
-        baseline_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1024).batch(batch_size)
-        baseline_validation = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1024).batch(batch_size)
+        baseline_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1024).skip(2).batch(batch_size)
+        baseline_validation = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1024).skip(2).batch(batch_size)
 
         baseline.fit(baseline_dataset, epochs=10, validation_data=baseline_validation)
 
@@ -302,7 +322,7 @@ def main():
         # control policy training #########################################
         ###################################################################
         print('Training policy network...')
-        batch_size = 128
+        batch_size = 16
         split_size = 8
         if(1 and not first_run): # baseline network normalization
             reward_to_go -= baseline(obs_data)[:,0]
@@ -316,12 +336,12 @@ def main():
                 (obs_data[:-num_samples//split_size], 
                     acs_data[:-num_samples//split_size], 
                     reward_to_go[:-num_samples//split_size])
-                ).shuffle(10000).batch(batch_size)
+                ).shuffle(10000).skip(2).batch(batch_size)
         validation_dataset = tf.data.Dataset.from_tensor_slices(
                 (obs_data[-num_samples//split_size:], 
                     acs_data[-num_samples//split_size:], 
                     reward_to_go[-num_samples//split_size:])
-                ).shuffle(10000).batch(batch_size)
+                ).shuffle(10000).skip(2).batch(batch_size)
 
         controller.fit(train_dataset, epochs=1, validation_data=validation_dataset)
 
@@ -369,6 +389,12 @@ def main():
             val_weightedMSE_metric.reset_states()
             print('Controller - Validation MSE: %s' % (float(val_MSE),))
             print('Controller - Weighted validation MSE: %s' % (float(val_weightedMSE),))
+
+        
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        controller.save_weights('model_checkpoints/controller/' + current_time)
+        baseline.save_weights('model_checkpoints/baseline/' + current_time)
+
 
         del obs_data, acs_data, reward_to_go, data
         first_run = False # toggle off after first run
