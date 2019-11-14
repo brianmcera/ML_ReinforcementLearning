@@ -208,9 +208,9 @@ def main():
         # generate training data 
         num_steps = 1000
         if(first_run):
-            num_traj = 1
+            num_traj = 10
         else:
-            num_traj = 2
+            num_traj = 10
         data, return_vec = sample_trajectories(num_traj, num_steps, env, controller, 
                                                 norm_constants, show_visual=False, 
                                                 first_run=first_run, normalize_inputs=normalize_input)
@@ -256,7 +256,7 @@ def main():
         # baseline neural network training ################################
         ###################################################################
         print('Training baseline network...')
-        batch_size = 1024
+        batch_size = 128
         split_size = 8
         baseline_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1024).batch(batch_size)
         baseline_validation = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1024).batch(batch_size)
@@ -302,7 +302,7 @@ def main():
         # control policy training #########################################
         ###################################################################
         print('Training policy network...')
-        batch_size = 1024
+        batch_size = 128
         split_size = 8
         if(1 and not first_run): # baseline network normalization
             reward_to_go -= baseline(obs_data)[:,0]
