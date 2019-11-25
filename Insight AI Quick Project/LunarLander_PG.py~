@@ -5,6 +5,7 @@ from sklearn import preprocessing, decomposition
 import matplotlib.pyplot as plt
 import datetime
 import time
+from collections import defaultdict
 import gym
 import pdb
 import random
@@ -19,13 +20,15 @@ class policyMu(Model):
     """
     def __init__(self, ob_dim, ac_dim):
         super(policyMu, self).__init__()
-        self.d1 = Dense(5, input_shape=ob_dim, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.d2 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
-        self.d3 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
-        self.d4 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
-        self.d5 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
-        self.d6 = Dense(ac_dim, activation='tanh')
-        self.dropout = Dropout(rate=0.5)
+        self.d1 = Dense(10, input_shape=ob_dim, activation='tanh', kernel_regularizer=tf.keras.regularizers.l2(1e-1))
+        self.d2 = Dense(20, activation='tanh', kernel_regularizer=tf.keras.regularizers.l2(1e-1))
+        self.d3 = Dense(20, activation='tanh', kernel_regularizer=tf.keras.regularizers.l2(1e-1))
+        self.d4 = Dense(20, activation='tanh', kernel_regularizer=tf.keras.regularizers.l2(1e-1))
+        self.d5 = Dense(20, activation='tanh', kernel_regularizer=tf.keras.regularizers.l2(1e-1))
+        self.d6 = Dense(8, activation='tanh', kernel_regularizer=tf.keras.regularizers.l2(1e-1))
+        self.d7 = Dense(8, activation='tanh', kernel_regularizer=tf.keras.regularizers.l2(1e-1))
+        self.d8 = Dense(ac_dim)
+        self.dropout = Dropout(rate=0.50)
         self.batchnormalization = BatchNormalization()
         self.batchnormalization2 = BatchNormalization()
 
@@ -34,10 +37,12 @@ class policyMu(Model):
         x = self.d2(x)
         x = self.batchnormalization(x)
         x = self.d3(x)
-        x = self.dropout(x)
         x = self.d4(x)
         x = self.d5(x)
-        return self.d6(x)
+        x = self.d6(x)
+        x = self.dropout(x)
+        x = self.d7(x)
+        return self.d8(x)
 
 class baselineNN(Model):
     """
@@ -67,11 +72,12 @@ class baselineNN(Model):
         x = self.d5(x)
         return self.d6(x)
     
-def sample_trajectories(num_traj, num_steps, env, controller, scaler, transformer, show_visual=False, first_run=False, normalize_inputs=True):
+def sample_trajectories(num_traj, num_steps, env, controller, scaler, transformer, scaler2, transformer2, show_visual=False, first_run=False, normalize_inputs=True, normalize_outputs=True):
     """
     This function will sample the OpenAI Gym environment for sample trajectories used for reinforcement learning.
     """
     return_vec = np.array([])
+    reward_dict = defaultdict(list)
     for traj_num in range(num_traj):
         ob = env.reset()
         obs, next_obs, acs, rewards, returns, reward_to_go = [], [], [], [], [], []
@@ -83,15 +89,19 @@ def sample_trajectories(num_traj, num_steps, env, controller, scaler, transforme
             obs.append(ob)
             if(first_run):
                 ac = env.action_space.sample() 
+                if ac[0]<0:
+                    ac[0] = 0
             else:
                 inputs = np.expand_dims(ob.astype(np.float32),0) 
                 inputs = inputs + 1e-2*np.random.standard_normal(inputs.shape[1:])
                 # normalize inputs
                 if(normalize_inputs):
-                    inputs = scaler.transform(inputs)
                     inputs = transformer.transform(inputs)
+                    inputs = scaler.transform(inputs)
                 ac = controller(inputs)[0]
             ac = np.array(ac)
+            if ac[0]<0:
+                ac[0] = 0
             if(np.any(np.isnan(ac))):
                 print('nan error')
                 pdb.set_trace()
@@ -99,9 +109,19 @@ def sample_trajectories(num_traj, num_steps, env, controller, scaler, transforme
                 ac = np.minimum(ac,env.action_space.high)
                 ac = np.maximum(ac,env.action_space.low)
             acs.append(ac)
-            ob, reward, done, info = env.step(ac)
+            action = ac
+            if(normalize_outputs):
+                action = scaler2.inverse_transform(action)
+                action = transform2.inverse_transform(action)
+            print(action)
+            ob, reward, done, info = env.step(action)
 
-            reward -= 1e2*ob[0]**2 # custom: penalize deviation from x=0
+            reward = -1e1*ob[0]**2 # custom: penalize deviation from x=0
+            reward = -1e1*ob[2]**2 # custom: penalize deviation from x=0
+            reward += -1e1*ob[4]**2
+            reward += -1e1*ob[5]**2
+            #reward += -1e1*(ob[1]-0.1)**2
+            reward += 100 # reward staying in episode
             next_obs.append(ob)
             rewards.append(reward)
             ret += reward
@@ -109,18 +129,18 @@ def sample_trajectories(num_traj, num_steps, env, controller, scaler, transforme
             steps += 1
 
             if done or steps>num_steps:
-                rewards[-1] -= 500
-                returns[-1] -= 500
                 print("Episode {} finished after {} timesteps".format(traj_num, steps))
                 break
 
         # backwards pass to calculate reward-to-go
         reward_to_go = np.full(len(rewards),np.nan)
-        discount = 0.80
+        discount = 0.2
         reward_to_go[-1] = rewards[-1]
         for i in range(2, reward_to_go.shape[0]+1):
             reward_to_go[-(i)] = rewards[-(i)] + discount*reward_to_go[-(i-1)] 
-        
+        for idx in range(len(reward_to_go)):
+            reward_dict[str(idx)].append(reward_to_go[idx])
+
         print('run return: {}'.format(returns[-1]))
         if(traj_num==0):
             trajectories = {"observations" : np.array(obs),
@@ -128,18 +148,23 @@ def sample_trajectories(num_traj, num_steps, env, controller, scaler, transforme
                 "rewards" : np.array(rewards),
                 "actions" : np.array(acs),
                 "returns" : np.array(returns),
-                "reward_to_go" : np.array(reward_to_go)}
+                "reward_to_go" : np.array(reward_to_go),
+                "step" : np.arange(steps)}
         else:
             traj = {"observations" : np.array(obs),
                 "next_observations": np.array(next_obs),
                 "rewards" : np.array(rewards),
                 "actions" : np.array(acs),
                 "returns" : np.array(returns),
-                "reward_to_go" : np.array(reward_to_go)}
+                "reward_to_go" : np.array(reward_to_go),
+                "step" : np.arange(steps)}
             for k in traj:
                 trajectories[k] = np.append(trajectories[k],traj[k],axis=0)
         return_vec = np.append(return_vec, returns[-1])
-    return trajectories, return_vec
+
+    for k in reward_dict:
+        reward_dict[k] = np.array(reward_dict[k])
+    return trajectories, return_vec, reward_dict
 
 def compute_normalized_data(data):
     """
@@ -156,9 +181,8 @@ def main():
     physical_devices = tf.config.experimental.list_physical_devices('GPU')
     assert len(physical_devices) > 0
     tf.config.experimental.set_memory_growth(physical_devices[0], True)
-    tf.keras.backend.set_floatx('float64')
+    #tf.keras.backend.set_floatx('float64')
 
-    
     # set up tensorboard logging
     current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     train_log_dir = 'logs/gradient_tape/' + current_time + '/train'
@@ -172,8 +196,10 @@ def main():
     ob_dim = env.observation_space.shape
     ac_dim = env.action_space.n if discrete else env.action_space.shape[0]
 
-    optimizer1 = tf.keras.optimizers.Adam(learning_rate=1e-3) # baseline optimizer
-    optimizer2 = tf.keras.optimizers.Adam(learning_rate=1e-4) # controller optimizer - smaller stepsize
+    # optimizer1 = tf.keras.optimizers.Adam(learning_rate=1e-3) # baseline optimizer
+    # optimizer2 = tf.keras.optimizers.Adam(learning_rate=1e-3) # controller optimizer - smaller stepsize
+    optimizer1 = tf.keras.optimizers.SGD(learning_rate=1e-1, momentum=0.0) # baseline optimizer
+    optimizer2 = tf.keras.optimizers.SGD(learning_rate=1e-1, momentum=0.0) # controller optimizer - smaller stepsize
 
     loss_object = tf.keras.losses.MeanSquaredError() 
     baseline_loss_object = tf.keras.losses.MeanSquaredError()
@@ -197,6 +223,7 @@ def main():
     graph = tf.compat.v1.get_default_graph()
     graph.finalize()
     
+
     # TRAINING LOOP #################################################################
     #################################################################################
     training_epochs = 50
@@ -204,23 +231,28 @@ def main():
     norm_constants = ()
     scaler = None
     transformer = None
+    scaler2 = None
+    transformer2 = None
     avg_return_vec = np.array([])
     std_return_vec = np.array([])
     max_return_vec = np.array([])
     plt.show()
 
     normalize_input = True # flag for toggling input normalization/kernel transformation
+    normalize_output = False # flag for toggling output normalization/transformation
+
     for training_epoch in range(training_epochs):
         # generate training data 
-        num_steps = 1000
+        num_steps = 100
         if(first_run):
             num_traj = 100
         else:
             num_traj = 20
-        data, return_vec = sample_trajectories(num_traj, num_steps, env, controller, 
-                                                scaler, transformer, show_visual=True, 
-                                                first_run=first_run, normalize_inputs=normalize_input)
-
+        data, return_vec, reward_dict = sample_trajectories(num_traj, num_steps, env, controller, 
+                                                scaler, transformer, scaler2, transformer2,
+                                                show_visual=True, first_run=first_run, 
+                                                normalize_inputs=normalize_input, 
+                                                normalize_outputs=normalize_output)
         # output current training rewards
         print('The maximum return is {}'.format(tf.math.reduce_max(data['returns'])))
         print('The average return is {}'.format(tf.math.reduce_mean(data['returns'])))
@@ -229,38 +261,51 @@ def main():
         std_return_vec = np.append(std_return_vec, np.std(return_vec))
         max_return_vec = np.append(max_return_vec, np.max(return_vec))
         print(avg_return_vec)
-        if(False):
+        if(True):
             plt.plot(avg_return_vec)
             plt.plot(avg_return_vec + std_return_vec, ':')
             plt.plot(avg_return_vec - std_return_vec, ':')
             plt.draw()
-            plt.pause(1e-3)
+            plt.pause(1e-2)
 
         # calculate normalized statistics, preprocess to improve training
         if(first_run):
             norm_constants = compute_normalized_data(data)
-            scaler = preprocessing.StandardScaler()
-            scaler.fit(data['observations'])
-            X_normalized = scaler.transform(data['observations'])
+
+            # input transformations
             transformer = decomposition.KernelPCA(n_components=data['observations'].shape[-1], kernel='linear')
-            X_transformed = transformer.fit_transform(X_normalized)
+            X = data['observations']
+            X = transformer.fit_transform(X)
+            scaler = preprocessing.StandardScaler()
+            scaler.fit(X)
+            X = scaler.transform(X)
             fig, axes = plt.subplots(8,2)
             first_obs = data['observations']
             for i in range(first_obs.shape[1]):
                 axes[i,0].hist(first_obs[:,i])
-                axes[i,1].hist(X_transformed[:,i])
+                axes[i,1].hist(X[:,i])
             fig.suptitle('Initial Data Preprocessing')
             print(np.std(first_obs, axis=0))
-            print(np.std(X_transformed, axis=0))
+            print(np.std(X, axis=0))
             plt.show()
-            input('Paused~')
+
+            # output transformations
+            transformer2 = decomposition.KernelPCA(n_components=data['actions'].shape[-1], kernel='linear')
+            Y_transformed = transformer2.fit_transform(data['actions'])
+            scaler2 = preprocessing.StandardScaler()
+            scaler2.fit(Y_transformed)
+            Y_normalized = scaler2.transform(Y_transformed)
+            # input('Paused~')
         
         # collect data
         obs_data = data['observations']
         if(normalize_input):
-            obs_data = scaler.transform(obs_data)
             obs_data = transformer.transform(obs_data)
+            obs_data = scaler.transform(obs_data)
         acs_data = data['actions']
+        if(normalize_output):
+            acs_data = transformer2.transform(acs_data)
+            acs_data = scaler2.transform(obs_data)
         reward_to_go = data['reward_to_go']
         num_samples = data['observations'].shape[0]
 
@@ -327,13 +372,17 @@ def main():
         print('Training policy network...')
         batch_size = 512
         split_size = 8
-        if(1 and not first_run): # baseline network normalization
+        if(0 and not first_run): # baseline network normalization
             reward_to_go -= baseline(obs_data)[:,0]
             reward_to_go = np.divide(reward_to_go, np.std(reward_to_go)+1e-8)
-            reward_to_go -= np.mean(reward_to_go)
+            #reward_to_go -= np.mean(reward_to_go)
         elif(0):
             reward_to_go -= np.mean(reward_to_go)
             reward_to_go = np.divide(reward_to_go,np.std(reward_to_go)+1e-8)
+        else:
+            reward_to_go -= [np.mean(x) for x in ([reward_dict[s] for 
+                s in list(map(str,data['step']))])]
+            reward_to_go = np.divide(reward_to_go, np.std(reward_to_go)+1e-8)
 
         train_dataset = tf.data.Dataset.from_tensor_slices(
                 (obs_data[:-num_samples//split_size], 
@@ -346,10 +395,10 @@ def main():
                     reward_to_go[-num_samples//split_size:])
                 ).shuffle(10000).batch(batch_size)
 
-        controller.fit(train_dataset, epochs=1, validation_data=validation_dataset)
+        controller.fit(train_dataset, epochs=10, validation_data=validation_dataset)
 
         # manually defined- gradient descent, useful for debugging 
-        for epoch in []:#range(10):
+        for epoch in range(0):
             print('Start of epoch %d' % (epoch,))
 
             # iterate over batches of dataset
