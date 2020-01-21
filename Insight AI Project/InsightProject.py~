@@ -24,7 +24,7 @@ class policyMu(Model):
         self.d1 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d2 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d3 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.d4 = Dense(ac_dim, activation='softmax')
+        self.d4 = Dense(ac_dim)
         self.dropout = Dropout(rate=0.5)
         self.batchnormalization1 = BatchNormalization()
         self.batchnormalization2 = BatchNormalization()
@@ -81,9 +81,8 @@ class baselineNN(Model):
     
 def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, show_visual=False, first_run=False, normalize_inputs=True):
     return_vec = np.array([])
-    ob = env.reset()
     for traj_num in range(num_traj):
-        #ob = env.reset()
+        ob = env.reset()
         obs, next_obs, acs, rewards, returns, reward_to_go = [], [], [], [], [], []
         steps = 0
         ret = 0
@@ -93,6 +92,8 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
             obs.append(ob)
             if(first_run):
                 ac = env.action_space.sample() 
+                if(ac[1]>0.5):
+                    ac[1]= 1 # encourage gas use for initial training
             else:
                 inputs = np.expand_dims(ob.astype(np.float32),0) 
                 inputs = inputs + 1e-1*np.random.standard_normal(inputs.shape[1:])
@@ -100,9 +101,10 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
                 if(normalize_inputs):
                     #inputs = np.divide(inputs-norm_constants[0], norm_constants[1])
                     inputs = tf.image.per_image_standardization(inputs)
-                ac = np.argmax(controller(inputs)[0])
-                print(ac)
-                ac = np.array(ac)
+                ac = controller(inputs)[0]
+            ac = np.array(ac)
+            if(ac[1]>0.5):
+                ac[1]= 1 # promote gas pedal
             if(np.any(np.isnan(ac))):
                 print('nan error')
                 pdb.set_trace()
@@ -161,8 +163,6 @@ def normalize_data(data):
     data_std = np.std(data, axis=0) + 1e-6
     return data_mean, data_std
 
-def discrete_space_loss(y_true, y_pred):
-    return -np.log(y_pred[y_true])
 
 def main():
     random.seed(0)
@@ -201,7 +201,7 @@ def main():
 
     controller = policyMu(ob_dim, ac_dim)
     controller.compile(optimizer = optimizer2,
-                    loss = discrete_space_loss,
+                    loss = loss_object,
                     metrics = [])
 
     baseline = baselineNN(ob_dim)
@@ -224,7 +224,7 @@ def main():
     max_return_vec = np.array([])
     plt.show()
 
-    normalize_input = False # flag for toggling input normalization/kernel transformation
+    normalize_input = True # flag for toggling input normalization/kernel transformation
     for training_epoch in range(training_epochs):
         # generate training data 
         num_steps = 500
@@ -281,7 +281,7 @@ def main():
         baseline_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1024).skip(2).batch(batch_size)
         baseline_validation = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1024).skip(2).batch(batch_size)
 
-        #baseline.fit(baseline_dataset, epochs=10, validation_data=baseline_validation)
+        baseline.fit(baseline_dataset, epochs=10, validation_data=baseline_validation)
 
         for epoch in []:#range(10):
             print('Start of epoch %d' % (epoch,))
@@ -324,7 +324,7 @@ def main():
         print('Training policy network...')
         batch_size = 16
         split_size = 8
-        if(0 and not first_run): # baseline network normalization
+        if(1 and not first_run): # baseline network normalization
             reward_to_go -= baseline(obs_data)[:,0]
             reward_to_go = np.divide(reward_to_go, np.std(reward_to_go)+1e-8)
             #reward_to_go -= np.mean(reward_to_go)
