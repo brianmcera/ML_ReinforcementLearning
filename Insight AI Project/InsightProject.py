@@ -11,19 +11,19 @@ import random
 from tensorflow.keras import Model, layers
 from tensorflow.keras.layers import Dense, Flatten, Conv2D, Dropout, MaxPool2D, BatchNormalization
 
-class policyMu(Model):
+class actor(Model):
     def __init__(self, ob_dim, ac_dim):
-        super(policyMu, self).__init__()
-        self.conv1 = Conv2D(10, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.conv2 = Conv2D(3, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.conv3 = Conv2D(3, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        super(actor, self).__init__()
+        self.conv1 = Conv2D(16, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
+        self.conv2 = Conv2D(16, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
+        self.conv3 = Conv2D(32, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
         self.maxpool1 = MaxPool2D(pool_size=(2,2), input_shape=ob_dim)
         self.maxpool2 = MaxPool2D(pool_size=(2,2))
         self.maxpool3 = MaxPool2D(pool_size=(2,2))
         self.flatten = Flatten()
-        self.d1 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.d2 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.d3 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        self.d1 = Dense(256, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
+        self.d2 = Dense(100, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
+        self.d3 = Dense(100, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-3))
         self.d4 = Dense(ac_dim, activation='softmax')
         self.dropout = Dropout(rate=0.5)
         self.batchnormalization1 = BatchNormalization()
@@ -45,19 +45,19 @@ class policyMu(Model):
         x = self.d3(x)
         return self.d4(x)
 
-class baselineNN(Model):
+class critic(Model):
     def __init__(self, ob_dim):
-        super(baselineNN, self).__init__()
-        self.conv1 = Conv2D(10, 5, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.conv2 = Conv2D(3, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.conv3 = Conv2D(3, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        super(critic, self).__init__()
+        self.conv1 = Conv2D(16, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        self.conv2 = Conv2D(16, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        self.conv3 = Conv2D(32, 3, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.maxpool1 = MaxPool2D(pool_size=(2,2), input_shape=ob_dim)
         self.maxpool2 = MaxPool2D(pool_size=(2,2))
         self.maxpool3 = MaxPool2D(pool_size=(2,2))
         self.flatten = Flatten()
-        self.d1 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.d2 = Dense(20, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
-        self.d3 = Dense(10, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        self.d1 = Dense(256, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        self.d2 = Dense(100, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
+        self.d3 = Dense(100, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(1e-4))
         self.d4 = Dense(1)
         self.dropout = Dropout(rate=0.5)
         self.batchnormalization1 = BatchNormalization()
@@ -79,11 +79,11 @@ class baselineNN(Model):
         x = self.d3(x)
         return self.d4(x)
     
-def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, show_visual=False, first_run=False, normalize_inputs=True):
+def sample_trajectories(num_traj, num_steps, env, controller, baseline, norm_constants, show_visual=False, first_run=False, normalize_inputs=True):
     return_vec = np.array([])
     ob = env.reset()
     for traj_num in range(num_traj):
-        #ob = env.reset()
+        ob = env.reset()
         obs, next_obs, acs, rewards, returns, reward_to_go = [], [], [], [], [], []
         steps = 0
         ret = 0
@@ -100,8 +100,8 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
                 if(normalize_inputs):
                     #inputs = np.divide(inputs-norm_constants[0], norm_constants[1])
                     inputs = tf.image.per_image_standardization(inputs)
-                ac = np.argmax(controller(inputs)[0])
-                print(ac)
+                ac = controller(inputs)[0]
+                ac = np.argmax(np.cumsum(ac)>np.random.rand(1))
                 ac = np.array(ac)
             if(np.any(np.isnan(ac))):
                 print('nan error')
@@ -111,6 +111,7 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
                 ac = np.maximum(ac,env.action_space.low)
             acs.append(ac)
             ob, reward, done, info = env.step(ac)
+            reward += 0.1 #reward staying alive
             next_obs.append(ob)
             rewards.append(reward)
             ret += reward
@@ -119,13 +120,6 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
                 print(ret)
             steps += 1
 
-            #check to see if car is stuck
-            lookback = 5
-            if(steps>lookback and np.all(ob==obs[-lookback])):
-                rewards[-1] -= 10
-                returns[-1] -= 10
-                done = True
-
             if done or steps>num_steps:
                 print("Episode {} finished after {} timesteps".format(traj_num, steps))
                 break
@@ -133,7 +127,7 @@ def sample_trajectories(num_traj, num_steps, env, controller, norm_constants, sh
         # backwards pass to calculate reward-to-go
         reward_to_go = np.full(len(rewards),np.nan)
         discount = 0.90
-        reward_to_go[-1] = rewards[-1]
+        reward_to_go[-1] = rewards[-1] + baseline(np.expand_dims(ob.astype(np.float32),0))[0]
         for i in range(2, reward_to_go.shape[0]+1):
             reward_to_go[-(i)] = rewards[-(i)] + discount*reward_to_go[-(i-1)] 
         
@@ -162,7 +156,7 @@ def normalize_data(data):
     return data_mean, data_std
 
 def discrete_space_loss(y_true, y_pred):
-    return -np.log(y_pred[y_true])
+    return (-tf.math.log(tf.reduce_sum(tf.multiply(y_true,y_pred),1))) #dot product with one-hot vector
 
 def main():
     random.seed(0)
@@ -181,7 +175,7 @@ def main():
     test_summary_writer = tf.summary.create_file_writer(test_log_dir)
 
     # initialize environment and deep model
-    env = gym.make("procgen:procgen-coinrun-v0") # define chosen environment here
+    env = gym.make("procgen:procgen-starpilot-v0", start_level=1, num_levels=1, distribution_mode='easy') # define chosen environment here
     discrete = isinstance(env.action_space, gym.spaces.Discrete)
     ob_dim = env.observation_space.shape
     ac_dim = env.action_space.n if discrete else env.action_space.shape[0]
@@ -191,7 +185,7 @@ def main():
     #optimizer1 = tf.keras.optimizers.SGD(learning_rate=1e-1, momentum=0.9)
     #optimizer2 = tf.keras.optimizers.SGD(learning_rate=1e-1, momentum=0.9)
 
-    loss_object = tf.keras.losses.MeanSquaredError() 
+    loss_object = tf.keras.losses.CategoricalCrossentropy() 
     baseline_loss_object = tf.keras.losses.MeanSquaredError()
 
     train_MSE_metric = tf.keras.metrics.MeanSquaredError()
@@ -199,12 +193,12 @@ def main():
     val_MSE_metric = tf.keras.metrics.MeanSquaredError()
     val_weightedMSE_metric = tf.keras.metrics.MeanSquaredError()
 
-    controller = policyMu(ob_dim, ac_dim)
+    controller = actor(ob_dim, ac_dim)
     controller.compile(optimizer = optimizer2,
-                    loss = discrete_space_loss,
+                    loss = loss_object,
                     metrics = [])
 
-    baseline = baselineNN(ob_dim)
+    baseline = critic(ob_dim)
     baseline.compile(optimizer = optimizer1,
                     loss = baseline_loss_object,
                     metrics = [])
@@ -229,10 +223,10 @@ def main():
         # generate training data 
         num_steps = 500
         if(first_run):
-            num_traj = 1
+            num_traj = 100
         else:
-            num_traj = 10
-        data, return_vec = sample_trajectories(num_traj, num_steps, env, controller, 
+            num_traj = 50
+        data, return_vec = sample_trajectories(num_traj, num_steps, env, controller, baseline, 
                                                 norm_constants, show_visual=True, 
                                                 first_run=first_run, normalize_inputs=normalize_input)
         # output current training rewards
@@ -281,52 +275,18 @@ def main():
         baseline_dataset = tf.data.Dataset.from_tensor_slices((obs_data[:-num_samples//split_size], reward_to_go[:-num_samples//split_size])).shuffle(1024).skip(2).batch(batch_size)
         baseline_validation = tf.data.Dataset.from_tensor_slices((obs_data[-num_samples//split_size:], reward_to_go[-num_samples//split_size:])).shuffle(1024).skip(2).batch(batch_size)
 
-        #baseline.fit(baseline_dataset, epochs=10, validation_data=baseline_validation)
+        baseline.fit(baseline_dataset, epochs=10, validation_data=baseline_validation)
 
-        for epoch in []:#range(10):
-            print('Start of epoch %d' % (epoch,))
-
-            # iterate over batches of dataset
-            for step, (x_batch_train, y_batch_train) in enumerate(baseline_dataset):
-                with tf.GradientTape() as tape:
-                    model_output = baseline(x_batch_train)
-                    loss_value = baseline_loss_object(y_batch_train,model_output, sample_weight=1/y_batch_train.shape[0])
-                grads = tape.gradient(loss_value, baseline.trainable_weights)
-                optimizer1.apply_gradients(zip(grads, baseline.trainable_weights))
-
-                # update training metric
-                train_MSE_metric(y_batch_train, model_output, sample_weight=1/y_batch_train.shape[0])
-
-                # log every 20 batches
-                if step % 20 == 0:
-                    print('Training loss (for one batch) at step %s: %s' % (step, float(loss_value)))
-                    print('Seen so far: %s samples' % ((step+1) * batch_size))
-
-            # display training metrics at the end of each epoch
-            train_MSE = train_MSE_metric.result()
-            print('Baseline - Training MSE over epoch: %s' % (float(train_MSE),))
-            # reset training metrics at the end of each epoch
-            train_MSE_metric.reset_states()
-
-            # run a validation loop at the end of each epoch
-            for x_batch_val, y_batch_val in baseline_validation:
-                val_output = baseline(x_batch_val)
-                #update val metrics
-                val_MSE_metric(y_batch_val,val_output, sample_weight=1/y_batch_val.shape[0])
-            val_MSE = val_MSE_metric.result()
-            val_MSE_metric.reset_states()
-            print('Baseline - Validation MSE: %s' % (float(val_MSE),))
-
-                    
         print('~~~~~~~~~~~~~~')
+
         # control policy training #########################################
         ###################################################################
         print('Training policy network...')
         batch_size = 16
         split_size = 8
-        if(0 and not first_run): # baseline network normalization
+        if(1 and not first_run): # baseline network normalization
             reward_to_go -= baseline(obs_data)[:,0]
-            reward_to_go = np.divide(reward_to_go, np.std(reward_to_go)+1e-8)
+            #reward_to_go = np.divide(reward_to_go, np.std(reward_to_go)+1e-8)
             #reward_to_go -= np.mean(reward_to_go)
         elif(1):
             reward_to_go -= np.mean(reward_to_go)
@@ -334,61 +294,16 @@ def main():
 
         train_dataset = tf.data.Dataset.from_tensor_slices(
                 (obs_data[:-num_samples//split_size], 
-                    acs_data[:-num_samples//split_size], 
+                    np.eye(env.action_space.n)[acs_data[:-num_samples//split_size]], 
                     reward_to_go[:-num_samples//split_size])
                 ).shuffle(10000).skip(2).batch(batch_size)
         validation_dataset = tf.data.Dataset.from_tensor_slices(
                 (obs_data[-num_samples//split_size:], 
-                    acs_data[-num_samples//split_size:], 
+                    np.eye(env.action_space.n)[acs_data[-num_samples//split_size:]], 
                     reward_to_go[-num_samples//split_size:])
                 ).shuffle(10000).skip(2).batch(batch_size)
 
         controller.fit(train_dataset, epochs=1, validation_data=validation_dataset)
-
-        for epoch in []:#range(10):
-            print('Start of epoch %d' % (epoch,))
-
-            # iterate over batches of dataset
-            for step, (x_batch_train, y_batch_train, reward_batch_train) in enumerate(train_dataset):
-                with tf.GradientTape() as tape:
-                    model_output = controller(x_batch_train)
-                    loss_value = loss_object(y_batch_train, model_output, sample_weight = reward_batch_train/y_batch_train.shape[0])
-                grads = tape.gradient(loss_value, controller.trainable_weights)
-                optimizer2.apply_gradients(zip(grads, controller.trainable_weights))
-
-                # update training metrics
-                train_MSE_metric(y_batch_train, model_output, sample_weight=1/y_batch_train.shape[0])
-                train_weightedMSE_metric(y_batch_train, model_output,
-                        sample_weight=reward_batch_train/y_batch_train.shape[0])
-
-                # log every 20 batches
-                if step % 20 == 0:
-                    print('Training loss (for one batch) at step %s: %s' % (step, float(loss_value)))
-                    print('Seen so far: %s samples' % ((step+1) * batch_size))
-
-            # display training metrics at the end of each epoch
-            train_MSE = train_MSE_metric.result()
-            weighted_MSE = train_weightedMSE_metric.result()
-
-            print('Controller - Training MSE over epoch: %s' % (float(train_MSE),))
-            print('Controller - Weighted training MSE over epoch: %s' % (float(weighted_MSE),))
-            # reset training metrics at the end of each epoch
-            train_MSE_metric.reset_states()
-            train_weightedMSE_metric.reset_states()
-
-            # run a validation loop at the end of each epoch
-            for x_batch_val, y_batch_val, reward_batch_val in validation_dataset:
-                val_output = controller(x_batch_val)
-                #update val metrics
-                val_weightedMSE_metric(y_batch_val, val_output,
-                        sample_weight=reward_batch_val/y_batch_val.shape[0])
-                val_MSE_metric(y_batch_val, val_output, sample_weight=1/y_batch_val.shape[0])
-            val_MSE = val_MSE_metric.result()
-            val_weightedMSE = val_weightedMSE_metric.result()
-            val_MSE_metric.reset_states()
-            val_weightedMSE_metric.reset_states()
-            print('Controller - Validation MSE: %s' % (float(val_MSE),))
-            print('Controller - Weighted validation MSE: %s' % (float(val_weightedMSE),))
 
         
         current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
